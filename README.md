@@ -6,16 +6,6 @@ docker-compose -f mongobasic/docker-compose.yaml
 
 # Импорта данных
 
-Заходим в контейнер и создаем БД в которую будем выполнять импорт данных.
-
-```
-docker exec -it mongodb bash
-mongo
-> use restaurants
-> exit
-exit
-```
-
 Далее копируем dataset внутрь контейнера
 
 ```
