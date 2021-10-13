@@ -6,7 +6,7 @@ docker-compose -f mongobasic/docker-compose.yaml
 
 # Импорта данных
 
-Далее копируем dataset внутрь контейнера
+Выполняем следующие команды
 
 ```
 docker cp path/to/dataset.json mongodb:/
