@@ -1,86 +1,137 @@
-# otus-nosql-cap
-CAP theorem
+# Запуск mongodb
 
-## Терминология
-
-CAP теорема - эвристическое утверждение, о том что распределенная система может в лучшем случае принадлежать к одному из двух классов **AP** или **CP**.
-
-Проясним значение каждой литеры отдельно:
-* **Consistency** (C) - сам по себе термин сильно перегружен. В акрониме **ACID** он означает, что БД поддерживает внутренние инварианты (уникальность значения в колонке, не отрицательность какой-либо колонки, целостность внешних ключей). В рамках же **CAP** теоремы он означает линеаризуемость (**linearizability**).
-* **Availability** (A) - любой запрос к работающему узлу системы должен приводить к ответу.
-* **Partition tolerance** (P) - устойчивость к разделению узлов. Узлы системы могут продолжать работать даже при условии отсутствия связи между ними.
-
-**Linearizability** - модель консистентность. Говорят, что система обеспечивает линеаризуемость если выполняется следующее условие:
 ```
-Если операция В началась после успешного завершения операции А, тогда операция В должна видеть состояние системы в момент завершении А или же в новом состоянии.
+docker-compose -f mongobasic/docker-compose.yaml 
 ```
 
-Неформально говоря линеаризуемые системы создают у пользователя иллюзию, что он работает с единой копией данных.
+# Импорта данных
 
+Заходим в контейнер и создаем БД в которую будем выполнять импорт данных.
 
-## MongoDb
+```
+docker exec -it mongodb bash
+mongo
+> use restaurants
+> exit
+exit
+```
 
-Документо-ориентированная база данных.
+Далее копируем dataset внутрь контейнера
 
-Схема кластера MongoDB.
+```
+docker cp path/to/dataset.json mongodb:/
+docker exec -it mongodb bash
+mongoimport --db hw --collection restaurants --drop --file /restaurants.json
+```
 
-![mermaid-diagram-20200526103254](pictures/mongo-cluster.png)
+Как результат видим следующий вывод
 
-Схема replica-set
+```
+2021-10-13T16:11:20.541+0000    connected to: mongodb://localhost/
+2021-10-13T16:11:20.541+0000    dropping: hw.restaurants
+2021-10-13T16:11:20.971+0000    2548 document(s) imported successfully. 0 document(s) failed to import.
+```
 
-![mermaid-diagram-20200526103254](pictures/mongo-replication.png)
+# Поиск и обновление документов
 
-Внутри каждой replica-set осуществляется выбор primary ноды, который отвечает за все операции записи.
-Операции чтения/записи используют концепцию read/write concern.
+Далее выполняем поиск 5 ресторанов на улице `67 High Street` с рейтингом выше 5
 
-Возможные значения write concern
-* majority - операция записи считается успешно зафиксированной, если запись реплицировалась на большинство узлов (например на 1 secondary реплику если в replica-set 3 узла, на 2 secondary реплики если в replica-set 5 узлов).
-* number - операция записи считается успешно зафиксированной, если запись реплицировалась на <number> secondary реплик.
-* custom - например используется в случае multi datacenter кластеров.
+```
+mongo hw
+> db.restaurants.find({"address": "67 High Street", "rating": {$gte: 5}}).limit(5)
 
-Я предполагаю, что MongoDB можно считать **CP** системой если используется write concern с фиксацией записи в primary ноде и "linearizable" read concern.
-Ограничения
-* Операция чтения может затрагивать только один документ.
-* Операция чтения в силу "linearizable" read concern проходит только через primary ноду.
+{ "_id" : ObjectId("55f14312c7447c3da7051dca"), "URL" : "http://www.just-eat.co.uk/restaurants-allinonejohnstone-pa5/menu", "address" : "67 High Street", "address line 2" : "Johnstone", "name" : "All In One Johnstone", "outcode" : "PA5", "postcode" : "8QG", "rating" : 5, "type_of_food" : "Kebab" }
+{ "_id" : ObjectId("55f14312c7447c3da7052029"), "URL" : "http://www.just-eat.co.uk/restaurants-aspendos-tn29/menu", "address" : "67 High Street", "address line 2" : "Dymchurch", "name" : "Aspendos", "outcode" : "TN29", "postcode" : "0NH", "rating" : 6, "type_of_food" : "Pizza" }
+```
 
-Я считаю, что MongoDB не может считаться **AP** системой в силу того, что все операции записи в replica-set проходят через primary ноду. В случае отказа primary ноды проходит новый раунд выборов.
+Далее найдем 10 ресторанов в которых готовят китайскую еду или пиццу
 
-![mermaid-diagram-20200526103254](pictures/mongo-leader-election.png)
+```
+db.restaurants.find({"type_of_food": {$in: ["Pizza", "Chinese"]}}).limit(10)
+```
 
-Длительность этого процесса регулируется конфигурацией `electionTimeoutMillis` (по умолчанию 10 секунд). Согласно документации MongoDB медианное время выборов не превосходит 12 секунд. В этот момент система не сможет принимать запросы на запись с подтверждением фиксации.
+Обновим рейтинг ресторана с id `55f14312c7447c3da7051dca`
 
-Вывод: C теоретической точки зрения MongoDB можно отнести к **CP** системам при операциях над одним документом.
+```
+db.restaurants.updateOne({ _id: ObjectId("55f14312c7447c3da7051dca") }, {$set: {"rating": 6}})
 
-## Cassandra
+{ "acknowledged" : true, "matchedCount" : 1, "modifiedCount" : 1 }
 
-Dynamo-style хранилище типа KV. Использует кворумную репликацию и стратегию разрешения конфликтов LWW (last write wins) с использованием обычных часов.
+db.restaurants.find({_id: ObjectId("55f14312c7447c3da7051dca") }, {"rating": 1})
 
-Репликация с использованием кворума
+{ "_id" : ObjectId("55f14312c7447c3da7051dca"), "rating" : 6 }
+```
 
-![mermaid-diagram-20200526103254](pictures/dynamo-quorum.png)
+# Индексы
 
-Декларируется, что Cassandra обладает tunable consistency.
+Далее найдем 5 ресторанов с рейтингом выше 7
 
-Можно с уверенностью отнести Cassandra к **AP** системам при соответствующем выборе read/write кворума.
+```
+db.restaurants.find({"rating": {$gt: 7}}).sort({"rating": 1}).limit(5).explain("executionStats")
 
-Dynamo-style системы могут быть также и линериазуемыми в случае использования техники read-repair при операции чтения. 
+{
+        "explainVersion" : "1",
+        ...
+        "executionStats" : {
+                "executionSuccess" : true,
+                "nReturned" : 5,
+                "executionTimeMillis" : 4,
+                "totalKeysExamined" : 0,
+                "totalDocsExamined" : 2548,
+                "executionStages" : {
+                    ...
+                }
+        }
+    ...
+}
+```
 
-![mermaid-diagram-20200526103254](pictures/read-repair.png)
+Далее создадим индекс для поля `rating` и запустим запрос еще раз
 
-Однако Cassandra все же не **CP** система в силу, того что она использует физическое время для разрешения конфликтов. В силу невозможности синхронизировать часы на разных узлах нет возможности и установить порядок событий в системе.
+```
+db.restaurants.createIndex({rating: 1})
+db.restaurants.find({"rating": {$gt: 4}}).sort({"rating": 1}).limit(5).explain("executionStats")
 
-Единственным исключением является операция **CAS** использующая механизм **lightweight transaction**. В этом случае Cassandra использует алгоритм Paxos для репликации данных.
-Возможно только в этой ситуации можно рассчитывать на линеаризуемость, если последующая операция чтения используется major кворум.
+{
+        "explainVersion" : "1",
+        ...
+        "executionStats" : {
+                "executionSuccess" : true,
+                "nReturned" : 5,
+                "executionTimeMillis" : 3,
+                "totalKeysExamined" : 5,
+                "totalDocsExamined" : 5,
+                "executionStages" : {
+                    ...
+                }
+        },
+        ...
+}
+```
 
-Вывод: Cassandra является **AP** системой.
+Как видно в первом случае было просмотрено 2548 документов, тогда как после создание индекса только 5.
 
-## MSSQL
+Проверим поиск по тексту. Найдем 5 ресторанов содержащий в своем названии слово `Wembley`
 
-Реляционная СУБД.
+```
+db.restaurants.createIndex({"name": "text"})
+db.restaurants.find({$text: {$search: "Wembley"}}).limit(5).explain("executionStats")
 
-В случае stand-alone конфигурации система не является распределенной и это вырожденный случай.
-В случае использования репликации можно рассмотреть два варианта:
-* Асинхронная репликация. При чтении с реплик мы теряем консистентность из-за наличия лага репликации. В то же время при отказе ведущего узла какое-то время отсутствует доступность.
-* Синхронная репликация. В принципе консистентность сохраняется, однако доступность на запись сильно ухудшается (если `p` вероятность отказа узла, то вероятность отказа становится `3 * p` при наличии двух реплик).
+{
+        "explainVersion" : "1",
+        ...
+        "executionStats" : {
+                "executionSuccess" : true,
+                "nReturned" : 2,
+                "executionTimeMillis" : 0,
+                "totalKeysExamined" : 2,
+                "totalDocsExamined" : 2,
+                "executionStages" : {
+                    ...
+                }
+        },
+        ...
+}
+```
 
-Вывод: Не **AP** и **CP** в случае асинхронной репликации. **CP** в случае синхронной.
+Как видно понадобилось проверить только два документа при поиске с использованием текстового индекса.
